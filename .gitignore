@@ -63,3 +63,8 @@ htmlcov/
 *.key
 secrets.*
 credentials.*
+
+# =========================
+# Archivos CSV (reportes, exports)
+# =========================
+*.csv
