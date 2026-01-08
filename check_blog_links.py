@@ -16,7 +16,11 @@ EXCLUDED_DOMAINS = {"www.facebook.com", "x.com", "www.linkedin.com"}
 TIMEOUT = 10
 
 headers = {
-    "User-Agent": "LinkChecker/1.0 (+SEO audit)"
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
 def get_posts_from_sitemap():
@@ -85,17 +89,15 @@ def get_blog_posts():
 
     return scrape_posts_from_blog()
 
-def extract_links(post_url):
+def fetch_post_soup(post_url):
     r = requests.get(post_url, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    return BeautifulSoup(r.text, "lxml")
 
-    title_tag = soup.select_one('h1[data-hook="post-title"]')
-    title = title_tag.get_text(strip=True) if title_tag else post_url
-
+def extract_link_targets(soup, post_url):
     content = soup.select_one('section[data-hook="post-description"]')
     if content is None:
-        return title, set()
+        return set()
 
     found = set()
 
@@ -112,7 +114,71 @@ def extract_links(post_url):
             continue
         found.add(full)
 
-    return title, found
+    return found
+
+def extract_post_context(soup, post_url):
+    title_tag = soup.select_one("title")
+    if title_tag and title_tag.get_text(strip=True):
+        post_title = title_tag.get_text(strip=True)
+    else:
+        h1_tag = soup.select_one('h1[data-hook="post-title"]')
+        post_title = h1_tag.get_text(strip=True) if h1_tag else post_url
+
+    content = soup.select_one('section[data-hook="post-description"]')
+    if content is None:
+        content = soup.select_one('div[data-hook="post-content"]')
+    if content is None:
+        content = soup.select_one("article")
+
+    return post_title, content
+
+def normalize_rel(rel_value):
+    if rel_value is None:
+        return []
+    if isinstance(rel_value, list):
+        rel_tokens = rel_value
+    else:
+        rel_tokens = str(rel_value).split()
+    return [token.strip().lower() for token in rel_tokens if token.strip()]
+
+def classify_link(href):
+    parsed = urlparse(href)
+    if not parsed.netloc:
+        return "internal"
+    if parsed.netloc.endswith("tusitiazo.com"):
+        return "internal"
+    return "external"
+
+def extract_seo_links(content, post_url):
+    if content is None:
+        return []
+
+    rows = []
+    for link in content.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        if not href:
+            continue
+        full_url = urljoin(post_url, href)
+        link_type = classify_link(full_url)
+        rel_tokens = normalize_rel(link.get("rel"))
+        referrerpolicy = (link.get("referrerpolicy") or "").strip().lower()
+        nofollow = "ON" if "nofollow" in rel_tokens else "OFF"
+        noreferrer = (
+            "ON"
+            if "noreferrer" in rel_tokens or referrerpolicy == "no-referrer"
+            else "OFF"
+        )
+        anchor_text = link.get_text(strip=True)
+        rows.append(
+            {
+                "link_type": link_type,
+                "anchor_text": anchor_text,
+                "link_url": full_url,
+                "nofollow": nofollow,
+                "noreferrer": noreferrer,
+            }
+        )
+    return rows
 
 def check_link(url):
     try:
@@ -123,13 +189,26 @@ def check_link(url):
 
 def main():
     posts = get_blog_posts()
-    results = []
+    link_results = []
+    seo_results = []
 
     for post in tqdm(posts, desc="Revisando entradas"):
-        title, links = extract_links(post)
+        try:
+            soup = fetch_post_soup(post)
+        except requests.RequestException:
+            continue
+
+        post_title, content = extract_post_context(soup, post)
+        seo_links = extract_seo_links(content, post)
+        for row in seo_links:
+            row["post_title"] = post_title
+            row["post_url"] = post
+            seo_results.append(row)
+
+        links = extract_link_targets(soup, post)
         for link in links:
             status = check_link(link)
-            results.append([title, post, link, status])
+            link_results.append([post_title, post, link, status])
             time.sleep(0.2)
 
     with open("reporte_enlaces_blog.csv", "w", newline="", encoding="utf-8") as f:
@@ -142,9 +221,37 @@ def main():
                 "estatus",
             ]
         )
-        writer.writerows(results)
+        writer.writerows(link_results)
 
     print("\nReporte generado: reporte_enlaces_blog.csv")
+
+    with open("reporte_seo_posts.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "post_title",
+                "post_url",
+                "link_type",
+                "anchor_text",
+                "link_url",
+                "nofollow",
+                "noreferrer",
+            ]
+        )
+        for row in seo_results:
+            writer.writerow(
+                [
+                    row["post_title"],
+                    row["post_url"],
+                    row["link_type"],
+                    row["anchor_text"],
+                    row["link_url"],
+                    row["nofollow"],
+                    row["noreferrer"],
+                ]
+            )
+
+    print("Reporte generado: reporte_seo_posts.csv")
 
 if __name__ == "__main__":
     main()
