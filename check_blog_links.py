@@ -16,7 +16,11 @@ EXCLUDED_DOMAINS = {"www.facebook.com", "x.com", "www.linkedin.com"}
 TIMEOUT = 10
 
 headers = {
-    "User-Agent": "LinkChecker/1.0 (+SEO audit)"
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
 def get_posts_from_sitemap():
@@ -90,7 +94,7 @@ def fetch_post_soup(post_url):
     r.raise_for_status()
     return BeautifulSoup(r.text, "lxml")
 
-def extract_links_from_soup(soup, post_url):
+def extract_link_targets(soup, post_url):
     content = soup.select_one('section[data-hook="post-description"]')
     if content is None:
         return set()
@@ -112,35 +116,69 @@ def extract_links_from_soup(soup, post_url):
 
     return found
 
-def extract_seo_data(soup, post_url):
-    title_tag = soup.select_one('h1[data-hook="post-title"]')
-    h1_title = title_tag.get_text(strip=True) if title_tag else ""
+def extract_post_context(soup, post_url):
+    title_tag = soup.select_one("title")
+    if title_tag and title_tag.get_text(strip=True):
+        post_title = title_tag.get_text(strip=True)
+    else:
+        h1_tag = soup.select_one('h1[data-hook="post-title"]')
+        post_title = h1_tag.get_text(strip=True) if h1_tag else post_url
 
-    page_title_tag = soup.find("title")
-    page_title = page_title_tag.get_text(strip=True) if page_title_tag else ""
+    content = soup.select_one('section[data-hook="post-description"]')
+    if content is None:
+        content = soup.select_one('div[data-hook="post-content"]')
+    if content is None:
+        content = soup.select_one("article")
 
-    meta_description_tag = soup.find("meta", attrs={"name": "description"})
-    meta_description = (
-        meta_description_tag.get("content", "").strip()
-        if meta_description_tag
-        else ""
-    )
-    meta_description_length = len(meta_description)
+    return post_title, content
 
-    canonical_tag = soup.find("link", attrs={"rel": "canonical"})
-    canonical_url = canonical_tag.get("href", "").strip() if canonical_tag else ""
+def normalize_rel(rel_value):
+    if rel_value is None:
+        return []
+    if isinstance(rel_value, list):
+        rel_tokens = rel_value
+    else:
+        rel_tokens = str(rel_value).split()
+    return [token.strip().lower() for token in rel_tokens if token.strip()]
 
-    post_title = h1_title or page_title or post_url
+def classify_link(href):
+    parsed = urlparse(href)
+    if not parsed.netloc:
+        return "internal"
+    if parsed.netloc.endswith("tusitiazo.com"):
+        return "internal"
+    return "external"
 
-    return [
-        post_title,
-        post_url,
-        page_title,
-        h1_title,
-        meta_description,
-        meta_description_length,
-        canonical_url,
-    ]
+def extract_seo_links(content, post_url):
+    if content is None:
+        return []
+
+    rows = []
+    for link in content.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        if not href:
+            continue
+        full_url = urljoin(post_url, href)
+        link_type = classify_link(full_url)
+        rel_tokens = normalize_rel(link.get("rel"))
+        referrerpolicy = (link.get("referrerpolicy") or "").strip().lower()
+        nofollow = "ON" if "nofollow" in rel_tokens else "OFF"
+        noreferrer = (
+            "ON"
+            if "noreferrer" in rel_tokens or referrerpolicy == "no-referrer"
+            else "OFF"
+        )
+        anchor_text = link.get_text(strip=True)
+        rows.append(
+            {
+                "link_type": link_type,
+                "anchor_text": anchor_text,
+                "link_url": full_url,
+                "nofollow": nofollow,
+                "noreferrer": noreferrer,
+            }
+        )
+    return rows
 
 def check_link(url):
     try:
@@ -158,12 +196,16 @@ def main():
         try:
             soup = fetch_post_soup(post)
         except requests.RequestException:
-            seo_results.append([post, post, "", "", "", 0, ""])
             continue
 
-        seo_results.append(extract_seo_data(soup, post))
-        links = extract_links_from_soup(soup, post)
-        post_title = seo_results[-1][0]
+        post_title, content = extract_post_context(soup, post)
+        seo_links = extract_seo_links(content, post)
+        for row in seo_links:
+            row["post_title"] = post_title
+            row["post_url"] = post
+            seo_results.append(row)
+
+        links = extract_link_targets(soup, post)
         for link in links:
             status = check_link(link)
             link_results.append([post_title, post, link, status])
@@ -187,16 +229,27 @@ def main():
         writer = csv.writer(f)
         writer.writerow(
             [
-                "Titulo de entrada(post)",
-                "url del post",
-                "title tag",
-                "h1",
-                "meta description",
-                "longitud meta description",
-                "canonical",
+                "post_title",
+                "post_url",
+                "link_type",
+                "anchor_text",
+                "link_url",
+                "nofollow",
+                "noreferrer",
             ]
         )
-        writer.writerows(seo_results)
+        for row in seo_results:
+            writer.writerow(
+                [
+                    row["post_title"],
+                    row["post_url"],
+                    row["link_type"],
+                    row["anchor_text"],
+                    row["link_url"],
+                    row["nofollow"],
+                    row["noreferrer"],
+                ]
+            )
 
     print("Reporte generado: reporte_seo_posts.csv")
 
