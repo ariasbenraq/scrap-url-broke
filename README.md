@@ -1,4 +1,4 @@
-# scrap-url-broke
+# scrap-url-broke-&-SEO-Links
 
 ## Descripción
 Script para generar un reporte CSV con enlaces internos y externos encontrados en los posts de un blog con estructura Wix.
