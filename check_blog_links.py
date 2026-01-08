@@ -1,9 +1,11 @@
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-from tqdm import tqdm
 import csv
 import time
+from collections import deque
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 BASE_SITE = "https://www.tusitiazo.com"
 BLOG_URL = "https://www.tusitiazo.com/blog"
@@ -14,55 +16,127 @@ headers = {
 }
 
 def get_blog_posts():
-    r = requests.get(BLOG_URL, headers=headers, timeout=TIMEOUT)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    posts = set()
+    visited = set()
+    queue = deque([BLOG_URL])
 
-    links = set()
-    for a in soup.select("a[href]"):
-        href = a.get("href")
-        if href and "/blog/" in href:
-            links.add(urljoin(BASE_SITE, href))
+    while queue:
+        page_url = queue.popleft()
+        if page_url in visited:
+            continue
+        visited.add(page_url)
 
-    return sorted(links)
+        r = requests.get(page_url, headers=headers, timeout=TIMEOUT)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "lxml")
+
+        for a in soup.select("a[href]"):
+            href = a.get("href")
+            if not href:
+                continue
+            full = urljoin(BASE_SITE, href)
+            parsed = urlparse(full)
+            if parsed.netloc and parsed.netloc != urlparse(BASE_SITE).netloc:
+                continue
+
+            path = parsed.path.rstrip("/")
+            if path.startswith("/blog") and path != "/blog":
+                if path.startswith("/blog/page") or "page" in parsed.query:
+                    if full not in visited:
+                        queue.append(full)
+                else:
+                    posts.add(full)
+
+        next_link = soup.select_one("a[rel='next'], link[rel='next']")
+        if next_link:
+            next_href = next_link.get("href")
+            if next_href:
+                next_full = urljoin(BASE_SITE, next_href)
+                if next_full not in visited:
+                    queue.append(next_full)
+
+    return sorted(posts)
+
+
+def get_content_root(soup):
+    selectors = [
+        "article",
+        "main",
+        ".post-content",
+        ".entry-content",
+        ".blog-content",
+        ".post-body",
+        ".content",
+    ]
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if node:
+            return node
+    return soup.body or soup
+
+
+def get_post_title(soup, content_root):
+    if content_root:
+        h1 = content_root.find("h1")
+        if h1 and h1.get_text(strip=True):
+            return h1.get_text(strip=True)
+    article = soup.find("article")
+    if article:
+        h1 = article.find("h1")
+        if h1 and h1.get_text(strip=True):
+            return h1.get_text(strip=True)
+    title = soup.find("title")
+    return title.get_text(strip=True) if title else "Sin título"
 
 def extract_links(post_url):
     r = requests.get(post_url, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
 
+    content_root = get_content_root(soup)
     found = set()
 
-    for tag in soup.find_all(["a", "img"]):
-        attr = "href" if tag.name == "a" else "src"
-        link = tag.get(attr)
-        if link:
+    for tag in content_root.find_all(["a", "img"]):
+        attrs = ["href"] if tag.name == "a" else ["src", "data-src", "data-lazy-src", "data-original"]
+        for attr in attrs:
+            link = tag.get(attr)
+            if not link:
+                continue
+            if link.startswith(("mailto:", "tel:", "javascript:")):
+                continue
             full = urljoin(post_url, link)
             found.add(full)
 
-    return found
+    return found, get_post_title(soup, content_root)
 
 def check_link(url):
     try:
         r = requests.head(url, allow_redirects=True, timeout=TIMEOUT)
+        if r.status_code in {403, 405}:
+            r = requests.get(url, allow_redirects=True, timeout=TIMEOUT, stream=True)
         return r.status_code
     except requests.RequestException:
         return "ERROR"
+
+
+def is_broken(status):
+    return status == "ERROR" or (isinstance(status, int) and status >= 400)
 
 def main():
     posts = get_blog_posts()
     results = []
 
     for post in tqdm(posts, desc="Revisando entradas"):
-        links = extract_links(post)
+        links, title = extract_links(post)
         for link in links:
             status = check_link(link)
-            results.append([post, link, status])
+            if is_broken(status):
+                results.append([title, post, link, status])
             time.sleep(0.2)
 
     with open("reporte_enlaces_blog.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Entrada del blog", "Enlace", "Estado HTTP"])
+        writer.writerow(["Título de la entrada", "URL de la entrada", "Enlace roto", "Estado HTTP"])
         writer.writerows(results)
 
     print("\nReporte generado: reporte_enlaces_blog.csv")
