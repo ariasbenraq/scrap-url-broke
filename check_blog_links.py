@@ -85,17 +85,15 @@ def get_blog_posts():
 
     return scrape_posts_from_blog()
 
-def extract_links(post_url):
+def fetch_post_soup(post_url):
     r = requests.get(post_url, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    return BeautifulSoup(r.text, "lxml")
 
-    title_tag = soup.select_one('h1[data-hook="post-title"]')
-    title = title_tag.get_text(strip=True) if title_tag else post_url
-
+def extract_links_from_soup(soup, post_url):
     content = soup.select_one('section[data-hook="post-description"]')
     if content is None:
-        return title, set()
+        return set()
 
     found = set()
 
@@ -112,7 +110,37 @@ def extract_links(post_url):
             continue
         found.add(full)
 
-    return title, found
+    return found
+
+def extract_seo_data(soup, post_url):
+    title_tag = soup.select_one('h1[data-hook="post-title"]')
+    h1_title = title_tag.get_text(strip=True) if title_tag else ""
+
+    page_title_tag = soup.find("title")
+    page_title = page_title_tag.get_text(strip=True) if page_title_tag else ""
+
+    meta_description_tag = soup.find("meta", attrs={"name": "description"})
+    meta_description = (
+        meta_description_tag.get("content", "").strip()
+        if meta_description_tag
+        else ""
+    )
+    meta_description_length = len(meta_description)
+
+    canonical_tag = soup.find("link", attrs={"rel": "canonical"})
+    canonical_url = canonical_tag.get("href", "").strip() if canonical_tag else ""
+
+    post_title = h1_title or page_title or post_url
+
+    return [
+        post_title,
+        post_url,
+        page_title,
+        h1_title,
+        meta_description,
+        meta_description_length,
+        canonical_url,
+    ]
 
 def check_link(url):
     try:
@@ -123,13 +151,22 @@ def check_link(url):
 
 def main():
     posts = get_blog_posts()
-    results = []
+    link_results = []
+    seo_results = []
 
     for post in tqdm(posts, desc="Revisando entradas"):
-        title, links = extract_links(post)
+        try:
+            soup = fetch_post_soup(post)
+        except requests.RequestException:
+            seo_results.append([post, post, "", "", "", 0, ""])
+            continue
+
+        seo_results.append(extract_seo_data(soup, post))
+        links = extract_links_from_soup(soup, post)
+        post_title = seo_results[-1][0]
         for link in links:
             status = check_link(link)
-            results.append([title, post, link, status])
+            link_results.append([post_title, post, link, status])
             time.sleep(0.2)
 
     with open("reporte_enlaces_blog.csv", "w", newline="", encoding="utf-8") as f:
@@ -142,9 +179,26 @@ def main():
                 "estatus",
             ]
         )
-        writer.writerows(results)
+        writer.writerows(link_results)
 
     print("\nReporte generado: reporte_enlaces_blog.csv")
+
+    with open("reporte_seo_posts.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "Titulo de entrada(post)",
+                "url del post",
+                "title tag",
+                "h1",
+                "meta description",
+                "longitud meta description",
+                "canonical",
+            ]
+        )
+        writer.writerows(seo_results)
+
+    print("Reporte generado: reporte_seo_posts.csv")
 
 if __name__ == "__main__":
     main()
