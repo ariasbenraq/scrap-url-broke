@@ -1,0 +1,65 @@
+# =========================
+# Entornos virtuales
+# =========================
+venv/
+.env/
+.env.*
+
+# =========================
+# Caché de Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# =========================
+# Archivos del sistema
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Archivos de editor / IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Logs y reportes generados
+# =========================
+*.log
+reporte_enlaces_blog.csv
+reporte_*.csv
+reporte_*.json
+reporte_*.txt
+
+# =========================
+# Cache de requests / scraping
+# =========================
+.cache/
+.httpcache/
+
+# =========================
+# Coverage / testing
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# =========================
+# Archivos temporales
+# =========================
+*.tmp
+*.temp
+*.bak
+
+# =========================
+# Seguridad
+# =========================
+*.pem
+*.key
+secrets.*
+credentials.*
