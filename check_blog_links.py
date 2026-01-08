@@ -5,10 +5,11 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_SITE = "https://www.tusitiazo.com"
-POST_URL = (
-    "https://www.tusitiazo.com/post/"
-    "google-renueva-el-logo-de-search-console-en-2025"
-)
+BLOG_INDEX_URL = "https://www.tusitiazo.com/post/"
+SITEMAP_URLS = [
+    "https://www.tusitiazo.com/blog-posts-sitemap.xml",
+    "https://www.tusitiazo.com/sitemap.xml",
+]
 TIMEOUT = 10
 
 HEADERS = {
@@ -18,6 +19,59 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+
+def fetch_sitemap_posts():
+    posts = set()
+
+    for sitemap_url in SITEMAP_URLS:
+        try:
+            response = requests.get(sitemap_url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        soup = BeautifulSoup(response.text, "xml")
+        nested = [loc.get_text(strip=True) for loc in soup.select("sitemap loc")]
+        sitemap_sources = nested if nested else [sitemap_url]
+        for source in sitemap_sources:
+            try:
+                source_response = requests.get(
+                    source, headers=HEADERS, timeout=TIMEOUT
+                )
+                source_response.raise_for_status()
+            except requests.RequestException:
+                continue
+            source_soup = BeautifulSoup(source_response.text, "xml")
+            for loc_tag in source_soup.select("url loc"):
+                url = loc_tag.get_text(strip=True)
+                if "/post/" in url:
+                    posts.add(url)
+
+        if posts:
+            break
+
+    return sorted(posts)
+
+
+def fetch_posts_from_index():
+    response = requests.get(BLOG_INDEX_URL, headers=HEADERS, timeout=TIMEOUT)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    return sorted(
+        {
+            urljoin(BASE_SITE, link["href"])
+            for link in soup.select("a[href]")
+            if "/post/" in link["href"]
+        }
+    )
+
+
+def get_post_urls():
+    posts = fetch_sitemap_posts()
+    if posts:
+        return posts
+    return fetch_posts_from_index()
 
 
 def extract_post_context(post_url):
@@ -92,8 +146,18 @@ def extract_links(content, post_url):
     return rows
 
 
-def write_csv(filename, rows, post_title, post_url):
-    with open(filename, "w", newline="", encoding="utf-8") as handle:
+def main():
+    post_urls = get_post_urls()
+    all_rows = []
+    for post_url in post_urls:
+        post_title, _, content = extract_post_context(post_url)
+        rows = extract_links(content, post_url)
+        for row in rows:
+            row["post_title"] = post_title
+            row["post_url"] = post_url
+            all_rows.append(row)
+
+    with open("reporte_seo_posts.csv", "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
@@ -106,11 +170,11 @@ def write_csv(filename, rows, post_title, post_url):
                 "noreferrer",
             ]
         )
-        for row in rows:
+        for row in all_rows:
             writer.writerow(
                 [
-                    post_title,
-                    post_url,
+                    row["post_title"],
+                    row["post_url"],
                     row["link_type"],
                     row["anchor_text"],
                     row["link_url"],
@@ -119,12 +183,7 @@ def write_csv(filename, rows, post_title, post_url):
                 ]
             )
 
-
-def main():
-    post_title, _, content = extract_post_context(POST_URL)
-    rows = extract_links(content, POST_URL)
-    write_csv("reporte_seo_post.csv", rows, post_title, POST_URL)
-    print("Reporte generado: reporte_seo_post.csv")
+    print("Reporte generado: reporte_seo_posts.csv")
 
 
 if __name__ == "__main__":
