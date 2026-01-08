@@ -7,6 +7,10 @@ import time
 
 BASE_SITE = "https://www.tusitiazo.com"
 BLOG_URL = "https://www.tusitiazo.com/blog"
+SITEMAP_URLS = [
+    "https://www.tusitiazo.com/blog-posts-sitemap.xml",
+    "https://www.tusitiazo.com/sitemap.xml",
+]
 STOP_URL_PREFIX = "https://www.tusitiazo.com/blog/categories/"
 EXCLUDED_DOMAINS = {"www.facebook.com", "x.com", "www.linkedin.com"}
 TIMEOUT = 10
@@ -15,18 +19,71 @@ headers = {
     "User-Agent": "LinkChecker/1.0 (+SEO audit)"
 }
 
+def get_posts_from_sitemap():
+    posts = set()
+
+    for sitemap_url in SITEMAP_URLS:
+        try:
+            r = requests.get(sitemap_url, headers=headers, timeout=TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        soup = BeautifulSoup(r.text, "xml")
+        sitemap_locs = [loc.get_text(strip=True) for loc in soup.select("sitemap loc")]
+        if sitemap_locs:
+            for loc in sitemap_locs:
+                try:
+                    sub = requests.get(loc, headers=headers, timeout=TIMEOUT)
+                    sub.raise_for_status()
+                except requests.RequestException:
+                    continue
+                sub_soup = BeautifulSoup(sub.text, "xml")
+                for loc_tag in sub_soup.select("url loc"):
+                    url = loc_tag.get_text(strip=True)
+                    if "/post/" in url:
+                        posts.add(url)
+        else:
+            for loc_tag in soup.select("url loc"):
+                url = loc_tag.get_text(strip=True)
+                if "/post/" in url:
+                    posts.add(url)
+
+        if posts:
+            break
+
+    return sorted(posts)
+
+def scrape_posts_from_blog():
+    posts = set()
+    page = 1
+    while True:
+        page_url = BLOG_URL if page == 1 else f"{BLOG_URL}?page={page}"
+        try:
+            r = requests.get(page_url, headers=headers, timeout=TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException:
+            break
+        soup = BeautifulSoup(r.text, "lxml")
+        page_posts = {
+            urljoin(BASE_SITE, a.get("href"))
+            for a in soup.select("a[href]")
+            if a.get("href") and "/post/" in a.get("href")
+        }
+        new_posts = page_posts - posts
+        if not new_posts:
+            break
+        posts.update(new_posts)
+        page += 1
+
+    return sorted(posts)
+
 def get_blog_posts():
-    r = requests.get(BLOG_URL, headers=headers, timeout=TIMEOUT)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    posts = get_posts_from_sitemap()
+    if posts:
+        return posts
 
-    links = set()
-    for a in soup.select("a[href]"):
-        href = a.get("href")
-        if href and "/post/" in href:
-            links.add(urljoin(BASE_SITE, href))
-
-    return sorted(links)
+    return scrape_posts_from_blog()
 
 def extract_links(post_url):
     r = requests.get(post_url, headers=headers, timeout=TIMEOUT)
