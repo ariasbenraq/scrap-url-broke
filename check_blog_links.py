@@ -17,6 +17,18 @@ headers = {
 
 def get_blog_posts():
     posts = set()
+    sitemap_posts = get_blog_posts_from_sitemap()
+    if sitemap_posts:
+        posts.update(sitemap_posts)
+
+    if posts:
+        return sorted(posts)
+
+    return sorted(get_blog_posts_from_listing())
+
+
+def get_blog_posts_from_listing():
+    posts = set()
     visited = set()
     queue = deque([BLOG_URL])
 
@@ -55,7 +67,61 @@ def get_blog_posts():
                 if next_full not in visited:
                     queue.append(next_full)
 
-    return sorted(posts)
+    return posts
+
+
+def get_blog_posts_from_sitemap():
+    sitemap_candidates = [
+        urljoin(BASE_SITE, "sitemap.xml"),
+        urljoin(BASE_SITE, "sitemap_index.xml"),
+        urljoin(BASE_SITE, "blog/sitemap.xml"),
+        urljoin(BASE_SITE, "blog/sitemap_index.xml"),
+    ]
+    posts = set()
+
+    for sitemap_url in sitemap_candidates:
+        try:
+            r = requests.get(sitemap_url, headers=headers, timeout=TIMEOUT)
+            if r.status_code != 200:
+                continue
+        except requests.RequestException:
+            continue
+
+        soup = BeautifulSoup(r.text, "xml")
+        sitemap_locs = [loc.get_text(strip=True) for loc in soup.select("sitemap > loc")]
+        if sitemap_locs:
+            for loc_url in sitemap_locs:
+                if "/blog" not in loc_url:
+                    continue
+                posts.update(_extract_blog_posts_from_sitemap(loc_url))
+            continue
+
+        posts.update(_extract_blog_posts_from_sitemap(sitemap_url))
+
+    return posts
+
+
+def _extract_blog_posts_from_sitemap(sitemap_url):
+    posts = set()
+    try:
+        r = requests.get(sitemap_url, headers=headers, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return posts
+    except requests.RequestException:
+        return posts
+
+    soup = BeautifulSoup(r.text, "xml")
+    for loc in soup.select("url > loc"):
+        url = loc.get_text(strip=True)
+        if "/blog" not in url:
+            continue
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        if path.startswith("/blog") and path != "/blog":
+            if path.startswith("/blog/page") or "page" in parsed.query:
+                continue
+            posts.add(url)
+    return posts
 
 
 def get_content_root(soup):
@@ -125,11 +191,17 @@ def is_broken(status):
 def main():
     posts = get_blog_posts()
     results = []
+    total_links_checked = 0
+
+    if not posts:
+        print("No se encontraron entradas del blog. Verifica BLOG_URL o el sitemap.")
+        return
 
     for post in tqdm(posts, desc="Revisando entradas"):
         links, title = extract_links(post)
         for link in links:
             status = check_link(link)
+            total_links_checked += 1
             if is_broken(status):
                 results.append([title, post, link, status])
             time.sleep(0.2)
@@ -140,6 +212,9 @@ def main():
         writer.writerows(results)
 
     print("\nReporte generado: reporte_enlaces_blog.csv")
+    print(f"Entradas encontradas: {len(posts)}")
+    print(f"Enlaces revisados: {total_links_checked}")
+    print(f"Enlaces rotos: {len(results)}")
 
 if __name__ == "__main__":
     main()
