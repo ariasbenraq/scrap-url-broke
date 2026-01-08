@@ -22,22 +22,24 @@ def extract_links(post_url):
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
 
-    title_tag = soup.find("h1")
+    title_tag = soup.select_one('h1[data-hook="post-title"]')
     title = title_tag.get_text(strip=True) if title_tag else post_url
+
+    content = soup.select_one('section[data-hook="post-description"]')
+    if content is None:
+        return title, set()
 
     found = set()
 
-    for tag in soup.find_all(["a", "img"]):
-        attr = "href" if tag.name == "a" else "src"
-        link = tag.get(attr)
-        if link:
-            full = urljoin(post_url, link)
-            if full.startswith(STOP_URL_PREFIX):
-                break
-            parsed = urlparse(full)
-            if parsed.netloc in EXCLUDED_DOMAINS:
-                continue
-            found.add(full)
+    for tag in content.find_all("a", href=True):
+        link = tag.get("href")
+        full = urljoin(post_url, link)
+        if full.startswith(STOP_URL_PREFIX):
+            break
+        parsed = urlparse(full)
+        if parsed.netloc in EXCLUDED_DOMAINS:
+            continue
+        found.add(full)
 
     return title, found
 
