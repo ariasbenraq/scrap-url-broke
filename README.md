@@ -26,8 +26,10 @@ python check_blog_links.py
 ```
 
 Salida esperada:
-- Archivo `reporte_seo_posts.csv` en el directorio raíz.
-- Mensaje en consola: `Reporte generado: reporte_seo_posts.csv`.
+- Archivos CSV en la carpeta `Reports`, con timestamp en el nombre:
+  - `enlaces_blog_YYYYMMDDHHMMSS.csv`
+  - `seo_posts_YYYYMMDDHHMMSS.csv`
+- Mensajes en consola del tipo: `Reporte generado: Reports/enlaces_blog_YYYYMMDDHHMMSS.csv`.
 
 ## Cambiar el sitio a analizar (otro Wix con misma estructura)
 Si quieres analizar un sitio distinto (pero con la misma estructura de Wix), actualiza estas constantes en `check_blog_links.py`:
