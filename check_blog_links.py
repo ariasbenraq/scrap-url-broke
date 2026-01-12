@@ -122,6 +122,22 @@ def classify_link(href):
     return "external"
 
 
+def fetch_link_status(url):
+    try:
+        response = requests.head(
+            url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True
+        )
+        if response.status_code == 405:
+            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        return str(response.status_code)
+    except requests.RequestException:
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            return str(response.status_code)
+        except requests.RequestException:
+            return "ERROR"
+
+
 def extract_links(content, post_url):
     if content is None:
         return []
@@ -133,6 +149,7 @@ def extract_links(content, post_url):
             continue
         full_url = urljoin(post_url, href)
         link_type = classify_link(full_url)
+        status = fetch_link_status(full_url)
         rel_tokens = normalize_rel(link.get("rel"))
         referrerpolicy = (link.get("referrerpolicy") or "").strip().lower()
         nofollow = "ON" if "nofollow" in rel_tokens else "OFF"
@@ -152,6 +169,7 @@ def extract_links(content, post_url):
                 "link_type": link_type,
                 "anchor_text": anchor_text,
                 "link_url": full_url,
+                "status": status,
                 "nofollow": nofollow,
                 "noreferrer": noreferrer,
                 "open_in_new_tab": target_blank,
@@ -214,7 +232,7 @@ def write_enlaces_report(rows, output_path):
                     row["post_url"],
                     row["anchor_text"],
                     row["link_url"],
-                    row["link_type"],
+                    row["status"],
                 ]
             )
 
@@ -246,6 +264,39 @@ def write_seo_report(rows, output_path):
             )
 
 
+def write_seo_test_report(rows, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "post_title",
+                "post_url",
+                "link_type",
+                "anchor_text",
+                "link_url",
+                "nofollow",
+                "noreferrer",
+                "open_in_new_tab",
+                "sponsored",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["post_title"],
+                    row["post_url"],
+                    row["link_type"],
+                    row["anchor_text"],
+                    row["link_url"],
+                    row["nofollow"],
+                    row["noreferrer"],
+                    "ON" if row["open_in_new_tab"] else "OFF",
+                    "ON" if row["sponsored"] else "OFF",
+                ]
+            )
+
+
 def next_versioned_path(directory, prefix, date_stamp):
     directory.mkdir(parents=True, exist_ok=True)
     pattern = re.compile(rf"{re.escape(prefix)}_{date_stamp}_v(\\d+)\\.csv")
@@ -262,11 +313,11 @@ def run_test_mode():
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
     selected_post = random.choice(post_urls)
-    link_rows, seo_rows = build_reports([selected_post])
+    link_rows, _ = build_reports([selected_post])
     enlaces_path = TEST_DIR / "enlaces_blog_test.csv"
     seo_path = TEST_DIR / "seo_posts_test.csv"
     write_enlaces_report(link_rows, enlaces_path)
-    write_seo_report(seo_rows, seo_path)
+    write_seo_test_report(link_rows, seo_path)
     print(f"Reporte generado: {enlaces_path}")
     print(f"Reporte generado: {seo_path}")
 
