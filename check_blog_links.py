@@ -181,7 +181,6 @@ def extract_links(content, post_url):
 
 def build_reports(post_urls):
     link_rows = []
-    seo_rows = []
     total_posts = len(post_urls)
     for index, post_url in enumerate(post_urls, start=1):
         print(f"Procesando post {index}/{total_posts}: {post_url}")
@@ -192,26 +191,7 @@ def build_reports(post_urls):
             row["post_url"] = post_url
             link_rows.append(row)
 
-        nofollow = "ON" if any(row["nofollow"] == "ON" for row in rows) else "OFF"
-        noreferrer = (
-            "ON" if any(row["noreferrer"] == "ON" for row in rows) else "OFF"
-        )
-        open_in_new_tab = (
-            "ON" if any(row["open_in_new_tab"] for row in rows) else "OFF"
-        )
-        sponsored = "ON" if any(row["sponsored"] for row in rows) else "OFF"
-        seo_rows.append(
-            {
-                "post_title": post_title,
-                "post_url": post_url,
-                "nofollow": nofollow,
-                "noreferrer": noreferrer,
-                "open_in_new_tab": open_in_new_tab,
-                "sponsored": sponsored,
-            }
-        )
-
-    return link_rows, seo_rows
+    return link_rows
 
 
 def write_enlaces_report(rows, output_path):
@@ -240,33 +220,6 @@ def write_enlaces_report(rows, output_path):
 
 
 def write_seo_report(rows, output_path):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "post_title",
-                "post_url",
-                "nofollow",
-                "noreferrer",
-                "open_in_new_tab",
-                "sponsored",
-            ]
-        )
-        for row in rows:
-            writer.writerow(
-                [
-                    row["post_title"],
-                    row["post_url"],
-                    row["nofollow"],
-                    row["noreferrer"],
-                    row["open_in_new_tab"],
-                    row["sponsored"],
-                ]
-            )
-
-
-def write_seo_test_report(rows, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -315,11 +268,11 @@ def run_test_mode():
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
     selected_post = random.choice(post_urls)
-    link_rows, _ = build_reports([selected_post])
+    link_rows = build_reports([selected_post])
     enlaces_path = TEST_DIR / "enlaces_blog_test.csv"
     seo_path = TEST_DIR / "seo_posts_test.csv"
     write_enlaces_report(link_rows, enlaces_path)
-    write_seo_test_report(link_rows, seo_path)
+    write_seo_report(link_rows, seo_path)
     print(f"Reporte generado: {enlaces_path}")
     print(f"Reporte generado: {seo_path}")
 
@@ -328,12 +281,12 @@ def run_full_mode():
     post_urls = get_post_urls()
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
-    link_rows, seo_rows = build_reports(post_urls)
+    link_rows = build_reports(post_urls)
     date_stamp = datetime.now().strftime("%Y%m%d")
     enlaces_path = next_versioned_path(REPORTS_DIR, "enlaces_blog", date_stamp)
     seo_path = next_versioned_path(REPORTS_DIR, "seo_posts", date_stamp)
     write_enlaces_report(link_rows, enlaces_path)
-    write_seo_report(seo_rows, seo_path)
+    write_seo_report(link_rows, seo_path)
     print(f"Reporte generado: {enlaces_path}")
     print(f"Reporte generado: {seo_path}")
 
