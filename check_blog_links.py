@@ -1,4 +1,9 @@
 import csv
+import random
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -11,6 +16,9 @@ SITEMAP_URLS = [
     "https://www.tusitiazo.com/sitemap.xml",
 ]
 TIMEOUT = 10
+
+REPORTS_DIR = Path("Reports")
+TEST_DIR = Path("Test")
 
 HEADERS = {
     "User-Agent": (
@@ -133,7 +141,12 @@ def extract_links(content, post_url):
             if "noreferrer" in rel_tokens or referrerpolicy == "no-referrer"
             else "OFF"
         )
-        anchor_text = link.get_text(strip=True)
+        anchor_text = link.get_text(separator=" ", strip=True)
+        anchor_text = " ".join(anchor_text.split())
+        if not anchor_text:
+            anchor_text = "[NO_TEXT]"
+        target_blank = (link.get("target") or "").strip().lower() == "_blank"
+        sponsored = "sponsored" in rel_tokens
         rows.append(
             {
                 "link_type": link_type,
@@ -141,49 +154,150 @@ def extract_links(content, post_url):
                 "link_url": full_url,
                 "nofollow": nofollow,
                 "noreferrer": noreferrer,
+                "open_in_new_tab": target_blank,
+                "sponsored": sponsored,
             }
         )
     return rows
 
 
-def main():
-    post_urls = get_post_urls()
-    all_rows = []
+def build_reports(post_urls):
+    link_rows = []
+    seo_rows = []
     for post_url in post_urls:
         post_title, _, content = extract_post_context(post_url)
         rows = extract_links(content, post_url)
         for row in rows:
             row["post_title"] = post_title
             row["post_url"] = post_url
-            all_rows.append(row)
+            link_rows.append(row)
 
-    with open("reporte_seo_posts.csv", "w", newline="", encoding="utf-8") as handle:
+        nofollow = "ON" if any(row["nofollow"] == "ON" for row in rows) else "OFF"
+        noreferrer = (
+            "ON" if any(row["noreferrer"] == "ON" for row in rows) else "OFF"
+        )
+        open_in_new_tab = (
+            "ON" if any(row["open_in_new_tab"] for row in rows) else "OFF"
+        )
+        sponsored = "ON" if any(row["sponsored"] for row in rows) else "OFF"
+        seo_rows.append(
+            {
+                "post_title": post_title,
+                "post_url": post_url,
+                "nofollow": nofollow,
+                "noreferrer": noreferrer,
+                "open_in_new_tab": open_in_new_tab,
+                "sponsored": sponsored,
+            }
+        )
+
+    return link_rows, seo_rows
+
+
+def write_enlaces_report(rows, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "Titulo de entrada(post)",
+                "url del post",
+                "anchor_text",
+                "url del link dentro del contenido del post",
+                "estatus",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["post_title"],
+                    row["post_url"],
+                    row["anchor_text"],
+                    row["link_url"],
+                    row["link_type"],
+                ]
+            )
+
+
+def write_seo_report(rows, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
                 "post_title",
                 "post_url",
-                "link_type",
-                "anchor_text",
-                "link_url",
                 "nofollow",
                 "noreferrer",
+                "open_in_new_tab",
+                "sponsored",
             ]
         )
-        for row in all_rows:
+        for row in rows:
             writer.writerow(
                 [
                     row["post_title"],
                     row["post_url"],
-                    row["link_type"],
-                    row["anchor_text"],
-                    row["link_url"],
                     row["nofollow"],
                     row["noreferrer"],
+                    row["open_in_new_tab"],
+                    row["sponsored"],
                 ]
             )
 
-    print("Reporte generado: reporte_seo_posts.csv")
+
+def next_versioned_path(directory, prefix, date_stamp):
+    directory.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(rf"{re.escape(prefix)}_{date_stamp}_v(\\d+)\\.csv")
+    max_version = 0
+    for path in directory.iterdir():
+        match = pattern.fullmatch(path.name)
+        if match:
+            max_version = max(max_version, int(match.group(1)))
+    return directory / f"{prefix}_{date_stamp}_v{max_version + 1}.csv"
+
+
+def run_test_mode():
+    post_urls = get_post_urls()
+    if not post_urls:
+        raise RuntimeError("No se encontraron posts para analizar.")
+    selected_post = random.choice(post_urls)
+    link_rows, seo_rows = build_reports([selected_post])
+    enlaces_path = TEST_DIR / "enlaces_blog_test.csv"
+    seo_path = TEST_DIR / "seo_posts_test.csv"
+    write_enlaces_report(link_rows, enlaces_path)
+    write_seo_report(seo_rows, seo_path)
+    print(f"Reporte generado: {enlaces_path}")
+    print(f"Reporte generado: {seo_path}")
+
+
+def run_full_mode():
+    post_urls = get_post_urls()
+    if not post_urls:
+        raise RuntimeError("No se encontraron posts para analizar.")
+    link_rows, seo_rows = build_reports(post_urls)
+    date_stamp = datetime.now().strftime("%Y%m%d")
+    enlaces_path = next_versioned_path(REPORTS_DIR, "enlaces_blog", date_stamp)
+    seo_path = next_versioned_path(REPORTS_DIR, "seo_posts", date_stamp)
+    write_enlaces_report(link_rows, enlaces_path)
+    write_seo_report(seo_rows, seo_path)
+    print(f"Reporte generado: {enlaces_path}")
+    print(f"Reporte generado: {seo_path}")
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("Uso: python check_blog_links.py [test|full]")
+        raise SystemExit(1)
+    mode = sys.argv[1].lower()
+    if mode == "test":
+        run_test_mode()
+        return
+    if mode == "full":
+        run_full_mode()
+        return
+    print("Modo inválido. Usa: python check_blog_links.py [test|full]")
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":
