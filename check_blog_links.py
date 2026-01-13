@@ -1,6 +1,5 @@
 import csv
 import random
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -252,15 +251,18 @@ def write_seo_report(rows, output_path):
             )
 
 
-def next_versioned_path(directory, prefix, date_stamp):
+def next_versioned_path(directory, prefix, timestamp):
     directory.mkdir(parents=True, exist_ok=True)
-    pattern = re.compile(rf"{re.escape(prefix)}_{date_stamp}_v(\\d+)\\.csv")
-    max_version = 0
-    for path in directory.iterdir():
-        match = pattern.fullmatch(path.name)
-        if match:
-            max_version = max(max_version, int(match.group(1)))
-    return directory / f"{prefix}_{date_stamp}_v{max_version + 1}.csv"
+    base_name = f"{prefix}_{timestamp}"
+    candidate = directory / f"{base_name}.csv"
+    if not candidate.exists():
+        return candidate
+    counter = 1
+    while True:
+        candidate = directory / f"{base_name}_{counter:02d}.csv"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def run_test_mode():
@@ -282,9 +284,9 @@ def run_full_mode():
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
     link_rows = build_reports(post_urls)
-    date_stamp = datetime.now().strftime("%Y%m%d")
-    enlaces_path = next_versioned_path(REPORTS_DIR, "enlaces_blog", date_stamp)
-    seo_path = next_versioned_path(REPORTS_DIR, "seo_posts", date_stamp)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    enlaces_path = next_versioned_path(REPORTS_DIR, "enlaces_blog", timestamp)
+    seo_path = next_versioned_path(REPORTS_DIR, "seo_posts", timestamp)
     write_enlaces_report(link_rows, enlaces_path)
     write_seo_report(link_rows, seo_path)
     print(f"Reporte generado: {enlaces_path}")
