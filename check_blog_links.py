@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 
 DEFAULT_BASE_SITE = "https://www.tusitiazo.com"
 TIMEOUT = 10
+DEFAULT_MAX_PAGES = 200
 
 REPORTS_DIR = Path("Reports")
 AUDIT_DIR = Path("Auditoria")
@@ -200,6 +201,58 @@ def fetch_page_response(url):
         return response
     except requests.RequestException:
         return None
+
+
+def normalize_crawl_url(url, base_site):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    cleaned = parsed._replace(fragment="").geturl()
+    if not cleaned:
+        return None
+    if not cleaned.startswith("http"):
+        cleaned = urljoin(base_site, cleaned)
+    return cleaned
+
+
+def crawl_site_pages(base_site, internal_domain, max_pages):
+    queue = [base_site]
+    visited = set()
+    discovered = []
+
+    while queue and len(discovered) < max_pages:
+        current = queue.pop(0)
+        normalized = normalize_crawl_url(current, base_site)
+        if not normalized:
+            continue
+        parsed = urlparse(normalized)
+        if parsed.netloc != internal_domain:
+            continue
+        if "/post/" in parsed.path:
+            continue
+        if normalized in visited:
+            continue
+
+        visited.add(normalized)
+        response = fetch_page_response(normalized)
+        if response is None:
+            discovered.append(normalized)
+            continue
+
+        discovered.append(normalized)
+        soup = BeautifulSoup(response.text, "lxml")
+        for link in soup.select("a[href]"):
+            href = (link.get("href") or "").strip()
+            if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+                continue
+            full_url = urljoin(normalized, href)
+            full_url = normalize_crawl_url(full_url, base_site)
+            if not full_url:
+                continue
+            if full_url not in visited:
+                queue.append(full_url)
+
+    return discovered
 
 
 def extract_links(content, post_url, internal_domain):
@@ -480,7 +533,14 @@ def run_full_mode(site_config):
 def run_audit_mode(site_config):
     page_urls = fetch_sitemap_urls(site_config)
     if not page_urls:
-        raise RuntimeError("No se encontraron URLs para auditar en el sitemap.")
+        print("No se encontraron URLs en el sitemap. Iniciando rastreo del sitio.")
+        page_urls = crawl_site_pages(
+            site_config["base_site"],
+            site_config["internal_domain"],
+            DEFAULT_MAX_PAGES,
+        )
+    if not page_urls:
+        raise RuntimeError("No se encontraron URLs para auditar.")
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     site_name = urlparse(site_config["base_site"]).netloc.replace(".", "_") or "sitio"
     audit_path = next_versioned_path(
