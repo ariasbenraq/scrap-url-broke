@@ -35,7 +35,7 @@ Salida esperada:
 Durante la ejecución se solicita la URL base en consola (Enter usa el valor por defecto).
 
 ### Modo auditoría (sitio completo)
-El modo `audit` consulta los sitemaps configurados y genera un reporte por página con:
+El modo `audit` consulta los sitemaps configurados y genera un reporte por página con (excluye la sección `/post/`):
 - Etiquetas H1, H2, H3.
 - Párrafos (`<p>`).
 - `alt` y nombres de archivo de imágenes.

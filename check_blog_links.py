@@ -109,7 +109,7 @@ def fetch_sitemap_urls(site_config):
             source_soup = BeautifulSoup(source_response.text, "xml")
             for loc_tag in source_soup.select("url loc"):
                 url = loc_tag.get_text(strip=True)
-                if url:
+                if url and "/post/" not in url:
                     urls.add(url)
         if urls:
             break
