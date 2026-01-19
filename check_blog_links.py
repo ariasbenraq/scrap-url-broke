@@ -8,15 +8,12 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-BASE_SITE = "https://www.tusitiazo.com"
-BLOG_INDEX_URL = "https://www.tusitiazo.com/post/"
-SITEMAP_URLS = [
-    "https://www.tusitiazo.com/blog-posts-sitemap.xml",
-    "https://www.tusitiazo.com/sitemap.xml",
-]
+DEFAULT_BASE_SITE = "https://www.tusitiazo.com"
 TIMEOUT = 10
+DEFAULT_MAX_PAGES = 200
 
 REPORTS_DIR = Path("Reports")
+AUDIT_DIR = Path("Auditoria")
 TEST_DIR = Path("Test")
 
 HEADERS = {
@@ -28,10 +25,39 @@ HEADERS = {
 }
 
 
-def fetch_sitemap_posts():
+def build_site_config(base_site):
+    parsed = urlparse(base_site)
+    if not parsed.netloc:
+        raise ValueError("La URL base no es válida.")
+    normalized_base = f"{parsed.scheme}://{parsed.netloc}"
+    return {
+        "base_site": normalized_base,
+        "blog_index_url": urljoin(normalized_base, "/post/"),
+        "sitemap_urls": [
+            urljoin(normalized_base, "/blog-posts-sitemap.xml"),
+            urljoin(normalized_base, "/sitemap.xml"),
+        ],
+        "internal_domain": parsed.netloc,
+    }
+
+
+def normalize_base_site(raw_value):
+    raw_value = raw_value.strip()
+    if not raw_value:
+        return DEFAULT_BASE_SITE
+    parsed = urlparse(raw_value)
+    if not parsed.scheme:
+        raw_value = f"https://{raw_value}"
+        parsed = urlparse(raw_value)
+    if not parsed.netloc:
+        raise ValueError("La URL base no es válida.")
+    return raw_value
+
+
+def fetch_sitemap_posts(site_config):
     posts = set()
 
-    for sitemap_url in SITEMAP_URLS:
+    for sitemap_url in site_config["sitemap_urls"]:
         try:
             response = requests.get(sitemap_url, headers=HEADERS, timeout=TIMEOUT)
             response.raise_for_status()
@@ -61,24 +87,56 @@ def fetch_sitemap_posts():
     return sorted(posts)
 
 
-def fetch_posts_from_index():
-    response = requests.get(BLOG_INDEX_URL, headers=HEADERS, timeout=TIMEOUT)
+def fetch_sitemap_urls(site_config):
+    urls = set()
+    for sitemap_url in site_config["sitemap_urls"]:
+        try:
+            response = requests.get(sitemap_url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        soup = BeautifulSoup(response.text, "xml")
+        nested = [loc.get_text(strip=True) for loc in soup.select("sitemap loc")]
+        sitemap_sources = nested if nested else [sitemap_url]
+        for source in sitemap_sources:
+            try:
+                source_response = requests.get(
+                    source, headers=HEADERS, timeout=TIMEOUT
+                )
+                source_response.raise_for_status()
+            except requests.RequestException:
+                continue
+            source_soup = BeautifulSoup(source_response.text, "xml")
+            for loc_tag in source_soup.select("url loc"):
+                url = loc_tag.get_text(strip=True)
+                if url and "/post/" not in url:
+                    urls.add(url)
+        if urls:
+            break
+    return sorted(urls)
+
+
+def fetch_posts_from_index(site_config):
+    response = requests.get(
+        site_config["blog_index_url"], headers=HEADERS, timeout=TIMEOUT
+    )
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "lxml")
     return sorted(
         {
-            urljoin(BASE_SITE, link["href"])
+            urljoin(site_config["base_site"], link["href"])
             for link in soup.select("a[href]")
             if "/post/" in link["href"]
         }
     )
 
 
-def get_post_urls():
-    posts = fetch_sitemap_posts()
+def get_post_urls(site_config):
+    posts = fetch_sitemap_posts(site_config)
     if posts:
         return posts
-    return fetch_posts_from_index()
+    return fetch_posts_from_index(site_config)
 
 
 def extract_post_context(post_url):
@@ -112,11 +170,11 @@ def normalize_rel(rel_value):
     return [token.strip().lower() for token in rel_tokens if token.strip()]
 
 
-def classify_link(href):
+def classify_link(href, internal_domain):
     parsed = urlparse(href)
     if not parsed.netloc:
         return "internal"
-    if parsed.netloc.endswith("tusitiazo.com"):
+    if parsed.netloc.endswith(internal_domain):
         return "internal"
     return "external"
 
@@ -137,7 +195,67 @@ def fetch_link_status(url):
             return "ERROR"
 
 
-def extract_links(content, post_url):
+def fetch_page_response(url):
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        return response
+    except requests.RequestException:
+        return None
+
+
+def normalize_crawl_url(url, base_site):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    cleaned = parsed._replace(fragment="").geturl()
+    if not cleaned:
+        return None
+    if not cleaned.startswith("http"):
+        cleaned = urljoin(base_site, cleaned)
+    return cleaned
+
+
+def crawl_site_pages(base_site, internal_domain, max_pages):
+    queue = [base_site]
+    visited = set()
+    discovered = []
+
+    while queue and len(discovered) < max_pages:
+        current = queue.pop(0)
+        normalized = normalize_crawl_url(current, base_site)
+        if not normalized:
+            continue
+        parsed = urlparse(normalized)
+        if parsed.netloc != internal_domain:
+            continue
+        if "/post/" in parsed.path:
+            continue
+        if normalized in visited:
+            continue
+
+        visited.add(normalized)
+        response = fetch_page_response(normalized)
+        if response is None:
+            discovered.append(normalized)
+            continue
+
+        discovered.append(normalized)
+        soup = BeautifulSoup(response.text, "lxml")
+        for link in soup.select("a[href]"):
+            href = (link.get("href") or "").strip()
+            if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+                continue
+            full_url = urljoin(normalized, href)
+            full_url = normalize_crawl_url(full_url, base_site)
+            if not full_url:
+                continue
+            if full_url not in visited:
+                queue.append(full_url)
+
+    return discovered
+
+
+def extract_links(content, post_url, internal_domain):
     if content is None:
         return []
 
@@ -147,7 +265,7 @@ def extract_links(content, post_url):
         if not href:
             continue
         full_url = urljoin(post_url, href)
-        link_type = classify_link(full_url)
+        link_type = classify_link(full_url, internal_domain)
         status = fetch_link_status(full_url)
         rel_tokens = normalize_rel(link.get("rel"))
         referrerpolicy = (link.get("referrerpolicy") or "").strip().lower()
@@ -178,19 +296,101 @@ def extract_links(content, post_url):
     return rows
 
 
-def build_reports(post_urls):
+def build_reports(post_urls, internal_domain):
     link_rows = []
     total_posts = len(post_urls)
     for index, post_url in enumerate(post_urls, start=1):
         print(f"Procesando post {index}/{total_posts}: {post_url}")
         post_title, _, content = extract_post_context(post_url)
-        rows = extract_links(content, post_url)
+        rows = extract_links(content, post_url, internal_domain)
         for row in rows:
             row["post_title"] = post_title
             row["post_url"] = post_url
             link_rows.append(row)
 
     return link_rows
+
+
+def extract_page_audit(page_url, internal_domain):
+    response = fetch_page_response(page_url)
+    if response is None:
+        return {
+            "page_url": page_url,
+            "status": "ERROR",
+            "title": "",
+            "meta_description": "",
+            "h1": "",
+            "h2": "",
+            "h3": "",
+            "paragraphs": "",
+            "image_alts": "",
+            "image_filenames": "",
+            "internal_urls": "",
+        }
+    status = str(response.status_code)
+    soup = BeautifulSoup(response.text, "lxml")
+    title_tag = soup.select_one("title")
+    title_text = title_tag.get_text(strip=True) if title_tag else ""
+    meta_desc = soup.select_one('meta[name="description"]')
+    meta_description = meta_desc.get("content", "").strip() if meta_desc else ""
+
+    def join_text(selector):
+        texts = [tag.get_text(separator=" ", strip=True) for tag in soup.select(selector)]
+        normalized = [" ".join(text.split()) for text in texts if text.strip()]
+        return " | ".join(normalized)
+
+    h1_text = join_text("h1")
+    h2_text = join_text("h2")
+    h3_text = join_text("h3")
+    paragraphs_text = join_text("p")
+
+    image_alts = []
+    image_filenames = []
+    for img in soup.select("img"):
+        alt_text = (img.get("alt") or "").strip()
+        if alt_text:
+            image_alts.append(alt_text)
+        src = (img.get("src") or "").strip()
+        if src:
+            parsed = urlparse(src)
+            filename = Path(parsed.path).name
+            if filename:
+                image_filenames.append(filename)
+    image_alts_text = " | ".join(image_alts)
+    image_filenames_text = " | ".join(image_filenames)
+
+    internal_urls = []
+    for link in soup.select("a[href]"):
+        href = (link.get("href") or "").strip()
+        if not href:
+            continue
+        full_url = urljoin(page_url, href)
+        if classify_link(full_url, internal_domain) == "internal":
+            internal_urls.append(full_url)
+    internal_urls_text = " | ".join(sorted(set(internal_urls)))
+
+    return {
+        "page_url": page_url,
+        "status": status,
+        "title": title_text,
+        "meta_description": meta_description,
+        "h1": h1_text,
+        "h2": h2_text,
+        "h3": h3_text,
+        "paragraphs": paragraphs_text,
+        "image_alts": image_alts_text,
+        "image_filenames": image_filenames_text,
+        "internal_urls": internal_urls_text,
+    }
+
+
+def build_audit_report(page_urls, internal_domain):
+    rows = []
+    total_pages = len(page_urls)
+    for index, page_url in enumerate(page_urls, start=1):
+        print(f"Auditando pagina {index}/{total_pages}: {page_url}")
+        rows.append(extract_page_audit(page_url, internal_domain))
+    return rows
 
 
 def write_enlaces_report(rows, output_path):
@@ -251,6 +451,43 @@ def write_seo_report(rows, output_path):
             )
 
 
+def write_audit_report(rows, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "page_url",
+                "status",
+                "title",
+                "meta_description",
+                "h1",
+                "h2",
+                "h3",
+                "paragraphs",
+                "image_alts",
+                "image_filenames",
+                "internal_urls",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["page_url"],
+                    row["status"],
+                    row["title"],
+                    row["meta_description"],
+                    row["h1"],
+                    row["h2"],
+                    row["h3"],
+                    row["paragraphs"],
+                    row["image_alts"],
+                    row["image_filenames"],
+                    row["internal_urls"],
+                ]
+            )
+
+
 def next_versioned_path(directory, prefix, timestamp):
     directory.mkdir(parents=True, exist_ok=True)
     base_name = f"{prefix}_{timestamp}"
@@ -265,12 +502,12 @@ def next_versioned_path(directory, prefix, timestamp):
         counter += 1
 
 
-def run_test_mode():
-    post_urls = get_post_urls()
+def run_test_mode(site_config):
+    post_urls = get_post_urls(site_config)
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
     selected_post = random.choice(post_urls)
-    link_rows = build_reports([selected_post])
+    link_rows = build_reports([selected_post], site_config["internal_domain"])
     enlaces_path = TEST_DIR / "enlaces_blog_test.csv"
     seo_path = TEST_DIR / "seo_posts_test.csv"
     write_enlaces_report(link_rows, enlaces_path)
@@ -279,11 +516,11 @@ def run_test_mode():
     print(f"Reporte generado: {seo_path}")
 
 
-def run_full_mode():
-    post_urls = get_post_urls()
+def run_full_mode(site_config):
+    post_urls = get_post_urls(site_config)
     if not post_urls:
         raise RuntimeError("No se encontraron posts para analizar.")
-    link_rows = build_reports(post_urls)
+    link_rows = build_reports(post_urls, site_config["internal_domain"])
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     enlaces_path = next_versioned_path(REPORTS_DIR, "enlaces_blog", timestamp)
     seo_path = next_versioned_path(REPORTS_DIR, "seo_posts", timestamp)
@@ -293,18 +530,52 @@ def run_full_mode():
     print(f"Reporte generado: {seo_path}")
 
 
+def run_audit_mode(site_config):
+    page_urls = fetch_sitemap_urls(site_config)
+    if not page_urls:
+        print("No se encontraron URLs en el sitemap. Iniciando rastreo del sitio.")
+        page_urls = crawl_site_pages(
+            site_config["base_site"],
+            site_config["internal_domain"],
+            DEFAULT_MAX_PAGES,
+        )
+    if not page_urls:
+        raise RuntimeError("No se encontraron URLs para auditar.")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    site_name = urlparse(site_config["base_site"]).netloc.replace(".", "_") or "sitio"
+    audit_path = next_versioned_path(
+        AUDIT_DIR, f"auditoria_{site_name}", timestamp
+    )
+    rows = build_audit_report(page_urls, site_config["internal_domain"])
+    write_audit_report(rows, audit_path)
+    print(f"Reporte generado: {audit_path}")
+
+
 def main():
     if len(sys.argv) != 2:
-        print("Uso: python check_blog_links.py [test|full]")
+        print("Uso: python check_blog_links.py [test|full|audit]")
         raise SystemExit(1)
+    try:
+        base_site = normalize_base_site(
+            input(
+                f"Ingrese la URL base a analizar (Enter para {DEFAULT_BASE_SITE}): "
+            )
+        )
+        site_config = build_site_config(base_site)
+    except ValueError as exc:
+        print(str(exc))
+        raise SystemExit(1) from exc
     mode = sys.argv[1].lower()
     if mode == "test":
-        run_test_mode()
+        run_test_mode(site_config)
         return
     if mode == "full":
-        run_full_mode()
+        run_full_mode(site_config)
         return
-    print("Modo inválido. Usa: python check_blog_links.py [test|full]")
+    if mode == "audit":
+        run_audit_mode(site_config)
+        return
+    print("Modo inválido. Usa: python check_blog_links.py [test|full|audit]")
     raise SystemExit(1)
 
 

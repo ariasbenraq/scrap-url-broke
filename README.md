@@ -22,34 +22,30 @@ Este proyecto **no requiere variables de entorno** para ejecutarse.
 
 ## Ejecución
 ```bash
-python check_blog_links.py
+python check_blog_links.py [test|full|audit]
 ```
 
 Salida esperada:
 - Archivos CSV en la carpeta `Reports`, con timestamp en el nombre:
   - `enlaces_blog_YYYYMMDDHHMMSS.csv`
   - `seo_posts_YYYYMMDDHHMMSS.csv`
+- Archivo CSV en la carpeta `Auditoria` cuando se usa el modo `audit`:
+  - `auditoria_nombre_del_sitio_YYYYMMDDHHMMSS.csv`
 - Mensajes en consola del tipo: `Reporte generado: Reports/enlaces_blog_YYYYMMDDHHMMSS.csv`.
+Durante la ejecución se solicita la URL base en consola (Enter usa el valor por defecto).
+
+### Modo auditoría (sitio completo)
+El modo `audit` consulta los sitemaps configurados y genera un reporte por página con (excluye la sección `/post/`). Si no encuentra sitemap, rastrea el sitio desde la URL base.
+- Etiquetas H1, H2, H3.
+- Párrafos (`<p>`).
+- `alt` y nombres de archivo de imágenes.
+- URLs internas detectadas.
+- Código de estado HTTP, título y metadescripción.
+
+Para ejecutarlo:
+```bash
+python check_blog_links.py audit
+```
 
 ## Cambiar el sitio a analizar (otro Wix con misma estructura)
-Si quieres analizar un sitio distinto (pero con la misma estructura de Wix), actualiza estas constantes en `check_blog_links.py`:
-
-- `BASE_SITE`: dominio base (ej. `https://www.otrositio.com`).
-- `BLOG_INDEX_URL`: URL de índice de posts (ej. `https://www.otrositio.com/post/`).
-- `SITEMAP_URLS`: lista de sitemaps del nuevo dominio.
-
-Además, modifica la función `classify_link` para que el dominio del nuevo sitio se considere interno. Actualmente valida `tusitiazo.com`:
-
-```python
-if parsed.netloc.endswith("tusitiazo.com"):
-    return "internal"
-```
-
-Cámbialo por el dominio del nuevo sitio, por ejemplo:
-
-```python
-if parsed.netloc.endswith("otrositio.com"):
-    return "internal"
-```
-
-Con eso, el script seguirá detectando los posts, extrayendo enlaces y generando el CSV para el nuevo sitio.
+Cuando ejecutes el script, ingresa la URL base cuando lo solicite la consola. El script deriva automáticamente los sitemaps y el dominio interno a partir de esa URL.
